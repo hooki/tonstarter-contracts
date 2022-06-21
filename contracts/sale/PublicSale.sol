@@ -227,7 +227,7 @@ contract PublicSale is
       * @param _claimPercents 각 라운드에서 분배할 토큰 비율
       * @notice claimPercents에는 각 라운드에 분배된 토큰의 퍼센트가 저장되어 있음.
       * 1라운드에 50%를 분배하고, 나머지 라운드에 10%씩 분배할 경우 claimPercents는 다음과 같이 구성됨.
-      *   => claimPercents[0] = 50, claimPercents[1] = 10, ...
+      *   => claimPercents[0] = 50, claimPercents[1] = 60, ...
     */
     function setEachClaim(
         uint256 _claimCounts,
