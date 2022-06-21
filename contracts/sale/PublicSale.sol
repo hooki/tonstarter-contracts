@@ -221,6 +221,14 @@ contract PublicSale is
         endDepositTime = _endDepositTime;
     }
 
+    /** @dev 각 라운드의 시작 시간(timestamp)과 분배할 토큰 비율 설정
+      * @param _claimCounts 전체 라운드 횟수
+      * @param _claimTimes 각 라운드가 시작되는 시간
+      * @param _claimPercents 각 라운드에서 분배할 토큰 비율
+      * @notice claimPercents에는 각 라운드에 분배된 토큰의 퍼센트가 저장되어 있음.
+      * 1라운드에 50%를 분배하고, 나머지 라운드에 10%씩 분배할 경우 claimPercents는 다음과 같이 구성됨.
+      *   => claimPercents[0] = 50, claimPercents[1] = 10, ...
+    */
     function setEachClaim(
         uint256 _claimCounts,
         uint256[] calldata _claimTimes,
@@ -236,18 +244,20 @@ contract PublicSale is
         }
         
         totalClaimCounts = _claimCounts;
-        uint256 i = 0;
-        uint256 y = 0;
-        for (i = 0; i < _claimCounts; i++) {
-            claimTimes.push(_claimTimes[i]);
-            if (i != 0){
-                require(claimTimes[i-1] < claimTimes[i], "PublicSale: claimtime err");
-            }
-            claimPercents.push(_claimPercents[i]);
-            y = y + _claimPercents[i];
+
+        claimTimes.push(_claimTimes[0]);
+        claimPercents.push(_claimPercents[0]);
+
+        uint256 idx;
+        for (idx = 1; idx < _claimCounts; idx++) {
+            claimTimes.push(_claimTimes[idx]);
+            claimPercents.push(_claimPercents[idx]);
+
+            require(claimTimes[idx - 1] < claimTimes[idx], "PublicSale: claimtime err");
         }
 
-        require(y == 100, "claimPercents err");
+        // 1라운드와 마지막 라운드에 각각 50%씩 분배하는 것도 가능하므로 마지막 라운드가 100%인 것만 확인
+        require(claimPercents[idx - 1] == 100, "PublicSale: claimPercents[last] != 100");
     }
 
     /// @inheritdoc IPublicSale
@@ -427,18 +437,26 @@ contract PublicSale is
         if(block.timestamp > endExclusiveTime && startRound != 0 ) {
             for(uint256 i = 0; i < length; i++) {
                 uint256 amount = (((totalExSaleAmount.add(totalOpenSaleAmount())).mul(claimPercents[startRound.add(i).sub(1)])).div(100));
+                if (i > 0) {
+                    amount = amount.sub(claims[i - 1]);
+                }
                 claims[i] = amount;
             }
         } 
         else {
             for(uint256 i = 0; i < length; i++) {
                 uint256 amount = (((totalExpectSaleAmount.add(totalExpectOpenSaleAmount)).mul(claimPercents[startRound.add(i).sub(1)])).div(100));
+                if (i > 0) {
+                    amount = amount.sub(claims[i - 1]);
+                }
                 claims[i] = amount;
             }
         }
         return claims;
     }
 
+    /// @dev 특정 라운드에 분배되는 토큰의 총량을 반환하는 함수
+    /// @param _round 라운드 지정(1 ~ )
     function distributionByRound(
         uint256 _round
     )
@@ -447,8 +465,16 @@ contract PublicSale is
         returns(uint256)
     {
         if(block.timestamp > endExclusiveTime && _round != 0) {
-            return (((totalExSaleAmount.add(totalOpenSaleAmount())).mul(claimPercents[(_round-1)])).div(100));
+            uint256 targetRoundAmount = totalExSaleAmount.add(totalOpenSaleAmount()).mul(claimPercents[_round-1]).div(100);
 
+            // 첫번째 라운드의 경우 이전 라운드가 존재하지 않기 때문에 할당된 토큰 전부가 분배되므로 targetRoundAmount 반환
+            if (_round == 1) {
+                return targetRoundAmount;
+            }
+
+            // 두번째 라운드부터는 이전 라운드에 분배된 토큰(prevRoundAmount)을 제외함
+            uint256 prevRoundAmount = totalExSaleAmount.add(totalOpenSaleAmount()).mul(claimPercents[_round-2]).div(100);
+            return targetRoundAmount - prevRoundAmount;
         } else {
             return 0;
         }
@@ -596,35 +622,35 @@ contract PublicSale is
         if (block.timestamp < startClaimTime) return (0, 0, 0);
         if (_round > totalClaimCounts) return (0, 0, 0);
 
-        LibPublicSale.UserClaim storage userClaim = usersClaim[_account];
+        // 유저가 claim해서 받아간 토큰의 양
+        uint256 claimedAmount = usersClaim[_account].claimAmount;
+
         (, uint256 realSaleAmount, uint256 refundAmount) = totalSaleUserAmount(_account);   //유저가 총 구매한 token의 양을 Return 함
-
         if (realSaleAmount == 0 ) return (0, 0, 0);
-        if (userClaim.claimAmount >= realSaleAmount) return (0, 0, 0);    //userClaim.claimAmount  = contract에서 유저에게 준양
 
+        // 유저가 구매한 토큰(realSaleAmount)만큼 이미 claim 한 경우
+        if (claimedAmount >= realSaleAmount) return (0, 0, 0);
+
+        // 특정 라운드에서 claim 할 수 있는 토큰의 양 확인
         if (_round != 0) {
-            uint256 amount = realSaleAmount.mul(claimPercents[(_round.sub(1))]).div(100);
-            return (amount, realSaleAmount, refundAmount);
+            uint256 prevRoundAmount = 0;
+            if (_round > 1) {
+                prevRoundAmount = realSaleAmount.mul(claimPercents[_round - 2]).div(100);
+            }
+            uint256 targetRoundAmount = realSaleAmount.mul(claimPercents[_round - 1]).div(100);
+            return (targetRoundAmount - prevRoundAmount, realSaleAmount, refundAmount);
         }
 
-        //해당 라운드에서 받아야하는 토큰의 양 -> (realSaleAmount * claimPercents[i] / 100) : 해당 라운드에서 받아야하는 토큰의 양
+        // block.timestamp를 사용해서 어느 round까지 claim 할 수 있는지 계산함
         uint256 round = currentRound();
-
-        if (totalClaimCounts == round && _round == 0) {
-            uint256 amount = realSaleAmount - userClaim.claimAmount;
-            return (amount, realSaleAmount, refundAmount);
+        if (round == 0) { // 첫번째 라운드가 시작되지 않았을 때
+            return (0, realSaleAmount, refundAmount);
         }
 
-        uint256 expectedClaimAmount;
-        for (uint256 i = 0; i < round; i++) {
-            expectedClaimAmount = expectedClaimAmount.add((realSaleAmount.mul(claimPercents[i]).div(100)));
-        }
+        uint256 claimableTokenInRound = realSaleAmount.mul(claimPercents[round - 1]).div(100);
+        uint256 amount = claimableTokenInRound - claimedAmount;
 
-        //Round를 0으로 넣으면 현재 내가 받을 수 있는 양을 리턴해주고 1 이상을 넣으면 해당 라운드에서 받을 수 있는 토큰의 양을 리턴해줌
-        if (_round == 0) {
-            uint256 amount = expectedClaimAmount - userClaim.claimAmount;
-            return (amount, realSaleAmount, refundAmount);
-        }
+        return (amount, realSaleAmount, refundAmount);
     }
 
     /// @inheritdoc IPublicSale
